@@ -53,61 +53,67 @@ export class LMStudioProvider implements vscode.LanguageModelChatProvider {
         }));
     }
 
-    private _constructChatHistory(messages: readonly vscode.LanguageModelChatRequestMessage[]): ChatHistoryData {
-        const chatHistory = messages.map(msg => {
-            let role: 'assistant' | 'user' | 'system' | 'tool' = msg.role === vscode.LanguageModelChatMessageRole.Assistant ? 'assistant' : 'user';
+    private convertMessage(message: vscode.LanguageModelChatRequestMessage): ChatMessageData {
+        const parts = message.content
+            .filter(part => part instanceof vscode.LanguageModelTextPart || part instanceof vscode.LanguageModelToolCallPart || part instanceof vscode.LanguageModelToolResultPart)
+            .map(part => this.convertPart(part));
 
-            // If the message contains a tool result part, set role to 'tool'
-            if (msg.content.some(part => part instanceof vscode.LanguageModelToolResultPart)) {
-                role = 'tool';
-            }
+        const toolResultParts = parts.filter(part => part.type === 'toolCallResult');
+        if (toolResultParts.length > 0) {
+            return {
+                role: "tool" as const,
+                content: toolResultParts as ChatMessagePartToolCallResultData[]
+            };
+        }
+        
+        if (message.role === vscode.LanguageModelChatMessageRole.Assistant) {
+            const assistantParts = parts.filter(part => part.type === 'text' || part.type === 'toolCallRequest');
+            return {
+                role: "assistant" as const,
+                content: assistantParts as Array<ChatMessagePartTextData | ChatMessagePartToolCallRequestData>
+            };
+        } else {
+            const userParts = parts.filter(part => part.type === 'text');
+            return {
+                role: "user" as const,
+                content: userParts as ChatMessagePartTextData[]
+            };
+        }
+    }
 
-            const parts = msg.content.map(part => {
-                if (part instanceof vscode.LanguageModelTextPart) {
-                    return { type: 'text' as const, text: part.value } as ChatMessagePartTextData;
-                } else if (part instanceof vscode.LanguageModelToolCallPart) {
-                    return {
-                        type: 'toolCallRequest' as const,
-                        toolCallRequest: {
-                            type: 'function' as const,
-                            id: part.callId,
-                            name: part.name,
-                            arguments: part.input as FunctionToolCallRequest['arguments'],
-                        }
-                    } as ChatMessagePartToolCallRequestData;
-                } else if (part instanceof vscode.LanguageModelToolResultPart) {
-                    return {
-                        type: 'toolCallResult' as const,
-                        toolCallId: part.callId,
-                        content: part.content.map(part => {
-                            if (part instanceof vscode.LanguageModelTextPart) {
-                                return part.value;
-                            }
-                            return '';
-                        }).join(''),
-                    } as ChatMessagePartToolCallResultData;
+    private convertPart(part: vscode.LanguageModelInputPart): ChatMessagePartTextData | ChatMessagePartToolCallRequestData | ChatMessagePartToolCallResultData {
+        if (part instanceof vscode.LanguageModelTextPart) {
+            return {
+                type: 'text' as const,
+                text: part.value
+            } as ChatMessagePartTextData;
+        } else if (part instanceof vscode.LanguageModelToolCallPart) {
+            return {
+                type: 'toolCallRequest' as const,
+                toolCallRequest: {
+                    type: 'function' as const,
+                    id: part.callId,
+                    name: part.name,
+                    arguments: part.input as FunctionToolCallRequest['arguments'],
                 }
-                return { type: 'text' as const, text: '' } as ChatMessagePartTextData;
-            });
+            } as ChatMessagePartToolCallRequestData;
+        } else if (part instanceof vscode.LanguageModelToolResultPart) {
+            return {
+                type: 'toolCallResult' as const,
+                toolCallId: part.callId,
+                content: part.content.map(part => {
+                    if (part instanceof vscode.LanguageModelTextPart) {
+                        return part.value;
+                    }
+                    return '';
+                }).join(''),
+            } as ChatMessagePartToolCallResultData;
+        }
+        return { type: 'text' as const, text: '' } as ChatMessagePartTextData;
+    }
 
-            if (role === 'user') {
-                return {
-                    role: "user" as const,
-                    content: parts as Array<ChatMessagePartTextData>
-                };
-            } else if (role === 'assistant') {
-                return {
-                    role: "assistant" as const,
-                    content: parts as Array<ChatMessagePartTextData | ChatMessagePartToolCallRequestData>
-                };
-            } else if (role === 'tool') {
-                return {
-                    role: "tool" as const,
-                    content: parts as Array<ChatMessagePartToolCallResultData>
-                };
-            }
-        });
-
+    private constructChatHistory(messages: readonly vscode.LanguageModelChatRequestMessage[]): ChatHistoryData {
+        const chatHistory = messages.map(msg => this.convertMessage(msg));
         return { messages: chatHistory } as ChatHistoryData;
     }
 
@@ -122,7 +128,7 @@ export class LMStudioProvider implements vscode.LanguageModelChatProvider {
         const abortController = new AbortController();
         token.onCancellationRequested(() => abortController.abort());
 
-        const llmChatHistory = this._constructChatHistory(messages);
+        const llmChatHistory = this.constructChatHistory(messages);
 
         const response = llmModel.respond(llmChatHistory, {
             maxTokens: options.modelOptions?.maxTokens || 2000,
