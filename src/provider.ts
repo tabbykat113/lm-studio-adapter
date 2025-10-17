@@ -1,4 +1,4 @@
-import { LLMInfo, LMStudioClient, rawFunctionTool, FunctionToolCallRequest, ToolCallContext, ChatMessagePartToolCallRequestData, ChatMessagePartToolCallResultData, ChatMessageData, ChatMessagePartTextData, ChatHistoryData } from '@lmstudio/sdk';
+import { LLMInfo, LMStudioClient, rawFunctionTool, FunctionToolCallRequest, ToolCallContext, ChatMessagePartToolCallRequestData, ChatMessagePartToolCallResultData, ChatMessageData, ChatMessagePartTextData, ChatHistoryData, LLMTool } from '@lmstudio/sdk';
 import * as vscode from 'vscode';
 
 export class LMStudioProvider implements vscode.LanguageModelChatProvider {
@@ -41,18 +41,14 @@ export class LMStudioProvider implements vscode.LanguageModelChatProvider {
         }));
     }
 
-    async provideLanguageModelChatResponse(model: vscode.LanguageModelChatInformation, messages: readonly vscode.LanguageModelChatRequestMessage[], options: vscode.ProvideLanguageModelChatResponseOptions, progress: vscode.Progress<vscode.LanguageModelResponsePart>, token: vscode.CancellationToken): Promise<void> {
-        const config = vscode.workspace.getConfiguration('lmStudioAdapter');
-        const wsUrl = config.get<string>('apiUrl') || 'ws://localhost:1234';
-        const client = new LMStudioClient({ baseUrl: wsUrl });
-        const llmModel = await client.llm.model(model.id);
-
-        const abortController = new AbortController();
-        token.onCancellationRequested(() => abortController.abort());
-
-        // TODO: Rewrite and convert to private method
+    private _constructChatHistory(messages: readonly vscode.LanguageModelChatRequestMessage[]): ChatHistoryData {
         const chatHistory = messages.map(msg => {
             let role: 'assistant' | 'user' | 'system' | 'tool' = msg.role === vscode.LanguageModelChatMessageRole.Assistant ? 'assistant' : 'user';
+
+            // If the message contains a tool result part, set role to 'tool'
+            if (msg.content.some(part => part instanceof vscode.LanguageModelToolResultPart)) {
+                role = 'tool';
+            }
 
             const parts = msg.content.map(part => {
                 if (part instanceof vscode.LanguageModelTextPart) {
@@ -68,7 +64,6 @@ export class LMStudioProvider implements vscode.LanguageModelChatProvider {
                         }
                     } as ChatMessagePartToolCallRequestData;
                 } else if (part instanceof vscode.LanguageModelToolResultPart) {
-                    role = 'tool';
                     return {
                         type: 'toolCallResult' as const,
                         toolCallId: part.callId,
@@ -101,93 +96,46 @@ export class LMStudioProvider implements vscode.LanguageModelChatProvider {
             }
         });
 
-        const llmChatHistory = { messages: chatHistory } as ChatHistoryData;
-        
-        const toolNameMappings: { [key: string]: string } = {
-            'semantic_search': 'copilot_searchCodebase',
-            'list_code_usages': 'copilot_listCodeUsages',
-            'get_vscode_api': 'copilot_getVSCodeAPI',
-            'file_search': 'copilot_findFiles',
-            'grep_search': 'copilot_findTextInFiles',
-            'read_file': 'copilot_readFile',
-            'list_dir': 'copilot_listDirectory',
-            'get_errors': 'copilot_getErrors',
-            'get_changed_files': 'copilot_getChangedFiles',
-            'test_failure': 'copilot_testFailure',
-            'create_new_workspace': 'copilot_createNewWorkspace',
-            'get_project_setup_info': 'copilot_getProjectSetupInfo',
-            'install_extension': 'copilot_installExtension',
-            'run_vscode_command': 'copilot_runVscodeCommand',
-            'create_new_jupyter_notebook': 'copilot_createNewJupyterNotebook',
-            'insert_edit_into_file': 'copilot_insertEdit',
-            'create_file': 'copilot_createFile',
-            'create_directory': 'copilot_createDirectory',
-            'open_simple_browser': 'copilot_openSimpleBrowser',
-            'replace_string_in_file': 'copilot_replaceString',
-            'edit_notebook_file': 'copilot_editNotebook',
-            'run_notebook_cell': 'copilot_runNotebookCell',
-            'read_notebook_cell_output': 'copilot_readNotebookCellOutput',
-            'fetch_webpage': 'copilot_fetchWebPage',
-            'get_search_view_results': 'copilot_getSearchResults',
-            'github_repo': 'copilot_githubRepo',
-        };
+        return { messages: chatHistory } as ChatHistoryData;
+    }
 
-        const availableToolNames = new Set(vscode.lm.tools.map(t => t.name));
-        const callableToolMap = new Map<string, string>();
+    async provideLanguageModelChatResponse(model: vscode.LanguageModelChatInformation, messages: readonly vscode.LanguageModelChatRequestMessage[], options: vscode.ProvideLanguageModelChatResponseOptions, progress: vscode.Progress<vscode.LanguageModelResponsePart>, token: vscode.CancellationToken): Promise<void> {
+        const config = vscode.workspace.getConfiguration('lmStudioAdapter');
+        const wsUrl = config.get<string>('apiUrl') || 'ws://localhost:1234';
+        const client = new LMStudioClient({ baseUrl: wsUrl });
+        const llmModel = await client.llm.model(model.id);
 
-        for (const tool of options.tools || []) {
-            if (availableToolNames.has(tool.name)) {
-                callableToolMap.set(tool.name, tool.name);
-            } else {
-                const mappedName = toolNameMappings[tool.name];
-                if (mappedName && availableToolNames.has(mappedName)) {
-                    callableToolMap.set(tool.name, mappedName);
-                }
-            }
-        }
+        const abortController = new AbortController();
+        token.onCancellationRequested(() => abortController.abort());
 
-        const finalToolsForModel = options.tools?.filter(tool => callableToolMap.has(tool.name)) || [];
+        const llmChatHistory = this._constructChatHistory(messages);
 
-        const tools = finalToolsForModel.map(vscodeTool => {
-            return rawFunctionTool({
-                name: vscodeTool.name,
-                description: vscodeTool.description,
-                parametersJsonSchema: vscodeTool.inputSchema ?? { type: 'object', properties: {}, required: [] },
-                implementation: async (params: Record<string, unknown>, ctx: ToolCallContext) => {
-                    const callableName = callableToolMap.get(vscodeTool.name);
-                    if (!callableName) {
-                        throw new Error(`Tool ${vscodeTool.name} is not available.`);
-                    }
-                    console.log(`Invoking tool: ${vscodeTool.name} (mapped to: ${callableName}) with params:`, params);
-                    const result = await vscode.lm.invokeTool(callableName, {
-                        toolInvocationToken: undefined,
-                        input: params
-                    });
-                    return result;
-                },
-            });
-        }) ?? [];
-
-        const response = llmModel.act(llmChatHistory, tools, {
+        const response = llmModel.respond(llmChatHistory, {
             maxTokens: options.modelOptions?.maxTokens || 2000,
             signal: abortController.signal,
+            rawTools: {
+                type: "toolArray",
+                tools:
+                    options.tools?.map(tool => {
+                    return {
+                        type: "function",
+                        function: {
+                            name: tool.name,
+                            description: tool.description || '',
+                            parameters: tool.inputSchema
+                        }
+                    } as LLMTool;
+                }) || [],
+            },
             onPredictionFragment(fragment) {
                 // Ignore reasoning fragments
                 if (fragment.reasoningType === 'none') {
                     progress.report(new vscode.LanguageModelTextPart(fragment.content));
                 }
             },
-            onMessage: (message) => {
-                // Report tool calls
-                const toolCalls = message.getToolCallRequests();
-                for (const call of toolCalls) {
-                    progress.report(new vscode.LanguageModelToolCallPart(call.id || 'none', call.name, call.arguments || {}));
-                }
-                // Report tool results
-                const results = message.getToolCallResults();
-                for (const result of results) {
-                    progress.report(new vscode.LanguageModelToolResultPart(result.toolCallId || 'none', [result.content]));
-                }
+            onToolCallRequestEnd(callId, info) {
+                const toolCallPart = new vscode.LanguageModelToolCallPart(callId.toString(), info.toolCallRequest.name, info.toolCallRequest.arguments ?? {});
+                progress.report(toolCallPart);
             }
         });
 
@@ -206,12 +154,10 @@ export class LMStudioProvider implements vscode.LanguageModelChatProvider {
         const client = new LMStudioClient({ baseUrl: wsUrl });
         const llmModel = await client.llm.model(model.id);
 
-        // NOTE: Inaccurate for tool calls, needs rewrite
+        // Note: LM Studio SDK does not provide a method to count tool call tokens, so we only count text parts here.
         const content = typeof text === 'string' ? text : text.content.map(part => {
             if (part instanceof vscode.LanguageModelTextPart) {
                 return part.value;
-            } else if (part instanceof vscode.LanguageModelToolCallPart) {
-                return `${part.name}(${JSON.stringify(part.input)})`;
             }
             return '';
         }).join('');
