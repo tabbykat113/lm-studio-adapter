@@ -2,10 +2,13 @@
 
 This extension integrates [LM Studio](https://lmstudio.ai/) with Visual Studio Code's chat feature, allowing you to use your locally hosted language models within the editor's native chat interface.
 
+This is an alternative to the [LM Studio BYOK Extension](https://github.com/pierceboggan/lmstudio-byok) written from scratch to actually support tool calling models, native tokenization features, and JIT model loading from the LM Studio SDK.
+
 ## Features
 
 *   **Seamless Integration:** Use your LM Studio models directly in the VS Code chat panel.
 *   **Model Selection:** Automatically lists and makes available all downloaded LLMs from your LM Studio instance.
+*   **JIT Model Loading:** If JIT is enabled in LM Studio, the extension will load models automatically. Otherwise requires manually loading the model first.
 *   **Tool Calling Support:** Supports tool calling capabilities if your model is trained for it.
 *   **Manual Refresh:** A command to manually refresh the list of available models.
 
@@ -33,7 +36,11 @@ This extension contributes the following settings:
 
 ## Known Issues
 
-*This section is a placeholder for known issues.*
+*   **No support for custom API Keys.**
+*   **Support for reasoning models is incomplete:**
+    - reasoning tags and contents are skipped
+    - as a result, model lacks reasoning context in multi-turn tool use scenarios
+    - use at your own risk
 
 ## Release Notes
 
