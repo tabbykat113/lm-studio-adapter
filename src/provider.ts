@@ -1,4 +1,4 @@
-import { LLMInfo, LMStudioClient, rawFunctionTool, FunctionToolCallRequest, ToolCallContext, ChatMessagePartToolCallRequestData, ChatMessagePartToolCallResultData, ChatMessageData, ChatMessagePartTextData, ChatHistoryData, LLMTool } from '@lmstudio/sdk';
+import { LLMInfo, LMStudioClient, rawFunctionTool, FunctionToolCallRequest, ToolCallContext, ChatMessagePartToolCallRequestData, ChatMessagePartToolCallResultData, ChatMessageData, ChatMessagePartTextData, ChatHistoryData, LLMTool, LLMToolParameters } from '@lmstudio/sdk';
 import * as vscode from 'vscode';
 
 export class LMStudioProvider implements vscode.LanguageModelChatProvider {
@@ -62,7 +62,7 @@ export class LMStudioProvider implements vscode.LanguageModelChatProvider {
         if (toolResultParts.length > 0) {
             return {
                 role: "tool" as const,
-                content: toolResultParts as ChatMessagePartToolCallResultData[]
+                content: toolResultParts
             };
         }
         
@@ -70,13 +70,13 @@ export class LMStudioProvider implements vscode.LanguageModelChatProvider {
             const assistantParts = parts.filter(part => part.type === 'text' || part.type === 'toolCallRequest');
             return {
                 role: "assistant" as const,
-                content: assistantParts as Array<ChatMessagePartTextData | ChatMessagePartToolCallRequestData>
+                content: assistantParts
             };
         } else {
             const userParts = parts.filter(part => part.type === 'text');
             return {
                 role: "user" as const,
-                content: userParts as ChatMessagePartTextData[]
+                content: userParts
             };
         }
     }
@@ -86,7 +86,7 @@ export class LMStudioProvider implements vscode.LanguageModelChatProvider {
             return {
                 type: 'text' as const,
                 text: part.value
-            } as ChatMessagePartTextData;
+            };
         } else if (part instanceof vscode.LanguageModelToolCallPart) {
             return {
                 type: 'toolCallRequest' as const,
@@ -96,7 +96,7 @@ export class LMStudioProvider implements vscode.LanguageModelChatProvider {
                     name: part.name,
                     arguments: part.input as FunctionToolCallRequest['arguments'],
                 }
-            } as ChatMessagePartToolCallRequestData;
+            };
         } else if (part instanceof vscode.LanguageModelToolResultPart) {
             return {
                 type: 'toolCallResult' as const,
@@ -107,14 +107,14 @@ export class LMStudioProvider implements vscode.LanguageModelChatProvider {
                     }
                     return '';
                 }).join(''),
-            } as ChatMessagePartToolCallResultData;
+            };
         }
-        return { type: 'text' as const, text: '' } as ChatMessagePartTextData;
+        return { type: 'text' as const, text: '' }; // This should never happen
     }
 
     private constructChatHistory(messages: readonly vscode.LanguageModelChatRequestMessage[]): ChatHistoryData {
         const chatHistory = messages.map(msg => this.convertMessage(msg));
-        return { messages: chatHistory } as ChatHistoryData;
+        return { messages: chatHistory };
     }
 
     async provideLanguageModelChatResponse(model: vscode.LanguageModelChatInformation, messages: readonly vscode.LanguageModelChatRequestMessage[], options: vscode.ProvideLanguageModelChatResponseOptions, progress: vscode.Progress<vscode.LanguageModelResponsePart>, token: vscode.CancellationToken): Promise<void> {
@@ -136,15 +136,15 @@ export class LMStudioProvider implements vscode.LanguageModelChatProvider {
             rawTools: {
                 type: "toolArray",
                 tools:
-                    options.tools?.map(tool => {
+                    options.tools?.map((tool): LLMTool => {
                         return {
                             type: "function",
                             function: {
                                 name: tool.name,
                                 description: tool.description,
-                                parameters: tool.inputSchema
+                                parameters: tool.inputSchema as LLMToolParameters
                             }
-                        } as LLMTool;
+                        };
                     }) || [],
             },
             onPredictionFragment(fragment) {
