@@ -2,35 +2,34 @@ import { LLMInfo, LMStudioClient, rawFunctionTool, FunctionToolCallRequest, Tool
 import * as vscode from 'vscode';
 
 export class LMStudioProvider implements vscode.LanguageModelChatProvider {
-    private client: LMStudioClient;
+    private client?: LMStudioClient;
+    private _wsUrl?: string;
     private cachedModels: LLMInfo[] = [];
     private _onDidChangeLanguageModelChatInformation = new vscode.EventEmitter<void>();
     readonly onDidChangeLanguageModelChatInformation = this._onDidChangeLanguageModelChatInformation.event;
 
     constructor() {
-        const config = vscode.workspace.getConfiguration('lmStudioAdapter');
-        const wsUrl = config.get<string>('apiUrl') || 'ws://localhost:1234';
-        this.client = new LMStudioClient({ baseUrl: wsUrl });
         this.refreshModels();
     }
 
-    private _initializeClient(): void {
+    private ensureClient(): LMStudioClient {
         const config = vscode.workspace.getConfiguration('lmStudioAdapter');
         const wsUrl = config.get<string>('apiUrl') || 'ws://localhost:1234';
-        this.client = new LMStudioClient({ baseUrl: wsUrl });
-        this.refreshModels();
+        if (!this.client || this._wsUrl !== wsUrl) {
+            this._wsUrl = wsUrl;
+            this.client = new LMStudioClient({ baseUrl: wsUrl });
+        }
+        return this.client;
     }
 
     public handleConfigurationChange(): void {
-        this._initializeClient();
+        this.refreshModels();
     }
 
     async refreshModels(): Promise<void> {
-        if (!this.client) {
-            return;
-        }
         try {
-            this.cachedModels = (await this.client.system.listDownloadedModels()).filter(model => model.type === 'llm');
+            const client = this.ensureClient();
+            this.cachedModels = (await client.system.listDownloadedModels()).filter(model => model.type === 'llm');
         } catch (error) {
             vscode.window.showErrorMessage(`Failed to fetch models: ${error instanceof Error ? error.message : 'Unknown error'}`);
             this.cachedModels = [];
@@ -113,10 +112,12 @@ export class LMStudioProvider implements vscode.LanguageModelChatProvider {
     }
 
     async provideLanguageModelChatResponse(model: vscode.LanguageModelChatInformation, messages: readonly vscode.LanguageModelChatRequestMessage[], options: vscode.ProvideLanguageModelChatResponseOptions, progress: vscode.Progress<vscode.LanguageModelResponsePart>, token: vscode.CancellationToken): Promise<void> {
-        if (!this.client) {
-            throw new Error("LM Studio client not initialized.");
+        const client = this.ensureClient();
+        if (!client) {
+            progress.report(new vscode.LanguageModelTextPart(`📡 Failed to connect to LM Studio. Please ensure the server is running and the API URL is correct.`));
+            return;
         }
-        const llmModel = await this.client.llm.model(model.id);
+        const llmModel = await client.llm.model(model.id);
 
         const abortController = new AbortController();
         token.onCancellationRequested(() => abortController.abort());
@@ -130,15 +131,15 @@ export class LMStudioProvider implements vscode.LanguageModelChatProvider {
                 type: "toolArray",
                 tools:
                     options.tools?.map(tool => {
-                    return {
-                        type: "function",
-                        function: {
-                            name: tool.name,
-                            description: tool.description,
-                            parameters: tool.inputSchema
-                        }
-                    } as LLMTool;
-                }) || [],
+                        return {
+                            type: "function",
+                            function: {
+                                name: tool.name,
+                                description: tool.description,
+                                parameters: tool.inputSchema
+                            }
+                        } as LLMTool;
+                    }) || [],
             },
             onPredictionFragment(fragment) {
                 // Ignore reasoning fragments
@@ -156,16 +157,20 @@ export class LMStudioProvider implements vscode.LanguageModelChatProvider {
             await response;
         } catch (error) {
             if (!token.isCancellationRequested) {
+                // Re-throwing the error will make it show up in the chat window as an error.
+                // This is a good fallback for unexpected errors from the respond() call.
                 throw error;
             }
         }
     }
 
     async provideTokenCount(model: vscode.LanguageModelChatInformation, text: string | vscode.LanguageModelChatRequestMessage, token: vscode.CancellationToken): Promise<number> {
-        if (!this.client) {
-            throw new Error("LM Studio client not initialized.");
+        const client = this.ensureClient();
+        if (!client) {
+            throw new Error(`Failed to connect to LM Studio. Please ensure the server is running and the API URL is correct.`);
         }
-        const llmModel = await this.client.llm.model(model.id);
+
+        const llmModel = await client.llm.model(model.id);
 
         // Note: LM Studio SDK does not provide a method to count tool call tokens, so we only count text parts here.
         const content = typeof text === 'string' ? text : text.content.map(part => {
