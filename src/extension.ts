@@ -11,6 +11,14 @@ export function activate(context: vscode.ExtensionContext) {
 	// Register the refresh command
 	const refreshCommand = vscode.commands.registerCommand('lm-studio-adapter.refreshModels', () => provider.refreshModels());
 	context.subscriptions.push(refreshCommand);
+
+	// Register the configuration change listener
+	const configListener = vscode.workspace.onDidChangeConfiguration(event => {
+		if (event.affectsConfiguration('lmStudioAdapter.apiUrl')) {
+			provider.handleConfigurationChange();
+		}
+	});
+	context.subscriptions.push(configListener);
 }
 
 export function deactivate() {}
